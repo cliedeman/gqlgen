@@ -17,6 +17,10 @@ func Generate(cfg *config.Config, option ...Option) error {
 	_ = syscall.Unlink(cfg.Exec.Filename)
 	_ = syscall.Unlink(cfg.Model.Filename)
 
+	if err := cfg.Check(); err != nil {
+		return errors.Wrap(err, "generating core failed")
+	}
+
 	plugins := []plugin.Plugin{
 		schemaconfig.New(),
 		modelgen.New(),
@@ -25,6 +29,16 @@ func Generate(cfg *config.Config, option ...Option) error {
 
 	for _, o := range option {
 		o(cfg, &plugins)
+	}
+
+	var schemaMutators []codegen.SchemaMutator
+	for _, p := range plugins {
+		if inj, ok := p.(plugin.SourcesInjector); ok {
+			inj.InjectSources(cfg)
+		}
+		if mut, ok := p.(codegen.SchemaMutator); ok {
+			schemaMutators = append(schemaMutators, mut)
+		}
 	}
 
 	for _, p := range plugins {
@@ -36,7 +50,7 @@ func Generate(cfg *config.Config, option ...Option) error {
 		}
 	}
 	// Merge again now that the generated models have been injected into the typemap
-	data, err := codegen.BuildData(cfg)
+	data, err := codegen.BuildData(cfg, schemaMutators)
 	if err != nil {
 		return errors.Wrap(err, "merging type systems failed")
 	}
@@ -52,6 +66,10 @@ func Generate(cfg *config.Config, option ...Option) error {
 				return errors.Wrap(err, p.Name())
 			}
 		}
+	}
+
+	if err = codegen.GenerateCode(data); err != nil {
+		return errors.Wrap(err, "generating core failed")
 	}
 
 	if err := validate(cfg); err != nil {
